@@ -309,8 +309,9 @@ ${whatIfResult ? `<h2>What-If Analysis</h2><pre style="white-space:pre-wrap;back
         </div>
       )}
 
-      <footer className="border-t border-border/40 py-8 text-center text-sm text-muted-foreground">
-        InsightAI · Only summarized dataset metadata is sent to AI. Raw rows never leave your browser.
+      <footer className="border-t border-border/40 py-8 text-center text-sm text-muted-foreground space-y-1">
+        <div>Only summarized dataset metadata is sent to AI. Raw rows never leave your browser.</div>
+        <div>© 2026 InsightAI | AI Business Analyst Agent</div>
       </footer>
     </div>
   );
