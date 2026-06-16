@@ -305,7 +305,7 @@ ${whatIfResult ? `<h2>What-If Analysis</h2><pre style="white-space:pre-wrap;back
           <PlanSection plan={plan} loading={planLoading} onGenerate={generatePlan} />
           <WhatIfSection input={whatIfInput} setInput={setWhatIfInput} result={whatIfResult} loading={whatIfLoading} onRun={runWhatIf} />
           <ExportSection onReport={downloadReport} onJSON={exportJSON} onCSV={exportCSV} />
-          <JudgingSection />
+          
         </div>
       )}
 
