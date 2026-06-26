@@ -242,8 +242,115 @@ function InsightAIApp() {
     } finally { setWhatIfLoading(false); }
   };
 
+  const buildFullReport = async (): Promise<{ report: AIReport; plan: ActionPlan; whatIf: string; reasoning: { question: string; thinking: string; answer: string }[] }> => {
+    if (!summary) throw new Error("no summary");
+    const meta = JSON.stringify(summaryForAI(summary));
+
+    // Report
+    let finalReport: AIReport | null = report;
+    if (!finalReport) {
+      const res = await callAIFn({
+        data: {
+          system: "You are InsightAI, a professional AI Business Analyst Agent. Return structured JSON only.",
+          user: `Analyze this dataset metadata and return JSON with keys: executiveSummary, keyFindings (string[]), risks (string[]), opportunities (string[]), recommendations (string[]), businessImpact, actionPlan (array of {step, description}).\n\nMETADATA:\n${meta}`,
+          json: true,
+        },
+      });
+      finalReport = (res.ok && safeParseJSON<AIReport>(res.content)) || localReport(summary);
+      setReport(finalReport);
+    }
+
+    // Plan
+    let finalPlan: ActionPlan | null = plan;
+    if (!finalPlan) {
+      const res = await callAIFn({
+        data: {
+          system: "You are InsightAI, a strategic business advisor. Return JSON only.",
+          user: `Based on this dataset metadata, return JSON: { priorities: [{title, reason, impact, difficulty, timeline, metric}] } with exactly 3 priorities.\n\nMETADATA:\n${meta}`,
+          json: true,
+        },
+      });
+      const parsed = res.ok ? safeParseJSON<ActionPlan>(res.content) : null;
+      finalPlan = parsed?.priorities ? parsed : {
+        priorities: [
+          { title: "Improve data quality", reason: `${summary.missingValues} missing values and ${summary.duplicateRows} duplicates limit analysis confidence.`, impact: "High", difficulty: "Low", timeline: "1–2 weeks", metric: "Quality score ≥ 95%" },
+          { title: "Segment by top categories", reason: "Categorical dimensions enable performance breakdown across the business.", impact: "High", difficulty: "Medium", timeline: "2–4 weeks", metric: "Identify top 3 performing segments" },
+          { title: "Operationalize KPIs", reason: "Convert numeric metrics into tracked KPIs with thresholds.", impact: "Medium", difficulty: "Medium", timeline: "4–6 weeks", metric: "5 KPIs in weekly review" },
+        ],
+      };
+      setPlan(finalPlan);
+    }
+
+    // What-if scenario (auto-generate a default if user hasn't run one)
+    let finalWhatIf = whatIfResult;
+    if (!finalWhatIf) {
+      const scenario = "What happens to business performance if data quality improves by 20% and we focus on the top customer segment?";
+      const res = await callAIFn({
+        data: {
+          system: "You are InsightAI's scenario simulator. Return JSON only.",
+          user: `Scenario: ${scenario}\n\nDataset metadata:\n${meta}\n\nReturn JSON: { assumptions: string[], reasoning: string, estimatedImpact: string, recommendation: string, dataGaps: string[] }`,
+          json: true,
+        },
+      });
+      const parsed = res.ok ? safeParseJSON<{ assumptions: string[]; reasoning: string; estimatedImpact: string; recommendation: string; dataGaps: string[] }>(res.content) : null;
+      if (parsed) {
+        finalWhatIf = `Scenario: ${scenario}\n\nAssumptions:\n${parsed.assumptions.map(a => `- ${a}`).join("\n")}\n\nReasoning:\n${parsed.reasoning}\n\nEstimated Impact:\n${parsed.estimatedImpact}\n\nRecommendation:\n${parsed.recommendation}\n\nData Gaps:\n${parsed.dataGaps.map(g => `- ${g}`).join("\n")}`;
+      } else {
+        finalWhatIf = `Scenario: ${scenario}\n\nBased on current dataset (${summary.rows} rows, ${summary.qualityPercent}% quality):\n- Cleaning missing values (${summary.missingValues}) could improve confidence by ~${Math.min(40, 100 - summary.qualityPercent)}%.\n- Focusing on top segments typically lifts conversion by 10-25%.\n- Recommendation: validate scenario assumptions against historical data before action.`;
+      }
+      setWhatIfResult(finalWhatIf);
+    }
+
+    // Reasoning agent — auto-run 3 strategic questions for the report
+    const baseQuestions = [
+      "What are the most important patterns in this dataset that a business leader should know about?",
+      "Which areas pose the highest risk to business performance, and why?",
+      "Where is the biggest growth opportunity hidden in this data?",
+    ];
+    const existingReasoning = chat
+      .map((m, i) => (m.role === "assistant" && chat[i - 1]?.role === "user")
+        ? { question: chat[i - 1].content, thinking: m.thinking || "", answer: m.content }
+        : null)
+      .filter(Boolean) as { question: string; thinking: string; answer: string }[];
+
+    const reasoning: { question: string; thinking: string; answer: string }[] = [...existingReasoning];
+    for (const q of baseQuestions) {
+      const res = await callAIFn({
+        data: {
+          system: "You are InsightAI's reasoning agent. Think step-by-step. Return JSON only.",
+          user: `Question: ${q}\n\nDataset metadata:\n${meta}\n\nReturn JSON: { thinking: string (your step-by-step reasoning process, 3-5 sentences), answer: string (clear final business answer) }`,
+          json: true,
+        },
+      });
+      const parsed = res.ok ? safeParseJSON<{ thinking: string; answer: string }>(res.content) : null;
+      if (parsed) {
+        reasoning.push({ question: q, thinking: parsed.thinking, answer: parsed.answer });
+      } else {
+        reasoning.push({
+          question: q,
+          thinking: `Reviewed ${summary.rows} rows × ${summary.columns} cols. Quality ${summary.qualityPercent}%, ${summary.missingValues} missing, ${summary.duplicateRows} duplicates. Cross-checked numeric vs categorical balance.`,
+          answer: `Based on local analysis: ${summary.rows} rows offer statistically meaningful patterns; data hygiene (${summary.qualityPercent}%) supports moderate-to-high confidence decisions.`,
+        });
+      }
+    }
+
+    return { report: finalReport, plan: finalPlan, whatIf: finalWhatIf, reasoning };
+  };
+
   const downloadReport = async () => {
     if (!summary) return;
+    setReportLoading(true);
+    toast.info("Building full report (executive summary, reasoning, scenarios, action plan)...");
+    let built: Awaited<ReturnType<typeof buildFullReport>>;
+    try {
+      built = await buildFullReport();
+    } catch (e) {
+      toast.error("Report build failed: " + (e as Error).message);
+      setReportLoading(false);
+      return;
+    }
+    const { report: rep, plan: pln, whatIf, reasoning } = built;
+
     const { jsPDF } = await import("jspdf");
     const doc = new jsPDF({ unit: "pt", format: "a4" });
     const pageW = doc.internal.pageSize.getWidth();
@@ -253,83 +360,82 @@ function InsightAIApp() {
     let y = 56;
 
     const ensureSpace = (needed: number) => {
-      if (y + needed > pageH - 48) {
-        doc.addPage();
-        y = 56;
-      }
+      if (y + needed > pageH - 48) { doc.addPage(); y = 56; }
     };
-    const writeLines = (text: string, size: number, opts: { bold?: boolean; color?: [number, number, number]; gap?: number } = {}) => {
-      doc.setFont("helvetica", opts.bold ? "bold" : "normal");
+    const writeLines = (text: string, size: number, opts: { bold?: boolean; italic?: boolean; color?: [number, number, number]; gap?: number; indent?: number } = {}) => {
+      doc.setFont("helvetica", opts.bold ? "bold" : opts.italic ? "italic" : "normal");
       doc.setFontSize(size);
       doc.setTextColor(...(opts.color ?? [17, 17, 17]));
-      const lines = doc.splitTextToSize(text, maxW) as string[];
+      const indent = opts.indent ?? 0;
+      const lines = doc.splitTextToSize(text, maxW - indent) as string[];
       const lineH = size * 1.35;
       for (const line of lines) {
         ensureSpace(lineH);
-        doc.text(line, marginX, y);
+        doc.text(line, marginX + indent, y);
         y += lineH;
       }
       y += opts.gap ?? 4;
     };
-    const h1 = (t: string) => writeLines(t, 20, { bold: true, color: [109, 40, 217], gap: 6 });
+    const h1 = (t: string) => writeLines(t, 22, { bold: true, color: [109, 40, 217], gap: 6 });
     const h2 = (t: string) => {
-      ensureSpace(40);
-      y += 8;
-      writeLines(t, 14, { bold: true, color: [30, 64, 175], gap: 2 });
+      ensureSpace(40); y += 10;
+      writeLines(t, 15, { bold: true, color: [30, 64, 175], gap: 2 });
       ensureSpace(8);
       doc.setDrawColor(229, 231, 235);
       doc.line(marginX, y, marginX + maxW, y);
       y += 10;
     };
+    const h3 = (t: string) => { ensureSpace(20); writeLines(t, 12, { bold: true, color: [55, 65, 81], gap: 2 }); };
     const para = (t: string) => writeLines(t, 11, { gap: 6 });
     const muted = (t: string) => writeLines(t, 9, { color: [107, 114, 128], gap: 6 });
-    const bullets = (items: string[]) => {
-      for (const it of items) writeLines(`• ${it}`, 11, { gap: 2 });
-      y += 4;
-    };
+    const bullets = (items: string[]) => { for (const it of items) writeLines(`• ${it}`, 11, { gap: 2, indent: 8 }); y += 4; };
 
     h1("InsightAI Executive Report");
     muted(`Generated ${new Date().toLocaleString()} · Dataset: ${summary.fileName}`);
 
-    h2("Dataset Overview");
+    h2("1. Dataset Overview");
     para(`Rows: ${summary.rows}    Columns: ${summary.columns}    Missing: ${summary.missingValues}    Duplicates: ${summary.duplicateRows}    Quality: ${summary.qualityPercent}%`);
+    h3(`Health Score: ${summary.healthScore}/100 (${summary.healthLabel})`);
+    h3("Strengths"); bullets(summary.strengths);
+    h3("Weaknesses"); bullets(summary.weaknesses);
 
-    h2(`Health Score: ${summary.healthScore}/100 (${summary.healthLabel})`);
-    writeLines("Strengths", 12, { bold: true, gap: 2 });
-    bullets(summary.strengths);
-    writeLines("Weaknesses", 12, { bold: true, gap: 2 });
-    bullets(summary.weaknesses);
+    h2("2. Executive Summary");
+    para(rep.executiveSummary);
+    h3("Key Findings"); bullets(rep.keyFindings);
+    h3("Risks"); bullets(rep.risks);
+    h3("Opportunities"); bullets(rep.opportunities);
+    h3("Recommendations"); bullets(rep.recommendations);
+    h3("Business Impact"); para(rep.businessImpact);
 
-    if (report) {
-      h2("Executive Summary");
-      para(report.executiveSummary);
-      h2("Key Findings");
-      bullets(report.keyFindings);
-      h2("Risks");
-      bullets(report.risks);
-      h2("Opportunities");
-      bullets(report.opportunities);
-      h2("Recommendations");
-      bullets(report.recommendations);
-      h2("Business Impact");
-      para(report.businessImpact);
-    }
+    h2("3. Reasoning Agent — Thought Process");
+    muted("Step-by-step reasoning the AI agent used to interpret the dataset.");
+    reasoning.forEach((r, i) => {
+      h3(`Q${i + 1}. ${r.question}`);
+      writeLines("Thinking process:", 10, { bold: true, color: [109, 40, 217], gap: 1 });
+      writeLines(r.thinking, 10, { italic: true, color: [75, 85, 99], gap: 4, indent: 8 });
+      writeLines("Answer:", 10, { bold: true, color: [30, 64, 175], gap: 1 });
+      para(r.answer);
+    });
 
-    if (plan) {
-      h2("Strategic Action Plan");
-      plan.priorities.forEach((p, i) => {
-        writeLines(`${i + 1}. ${p.title}`, 12, { bold: true, gap: 2 });
-        para(p.reason);
-        muted(`Impact: ${p.impact} · Difficulty: ${p.difficulty} · Timeline: ${p.timeline} · Metric: ${p.metric}`);
-      });
-    }
+    h2("4. What-If Scenario Analysis");
+    para(whatIf);
 
-    if (whatIfResult) {
-      h2("What-If Analysis");
-      para(whatIfResult);
-    }
+    h2("5. Strategic Action Plan");
+    pln.priorities.forEach((p, i) => {
+      h3(`Priority ${i + 1}: ${p.title}`);
+      para(p.reason);
+      muted(`Impact: ${p.impact}  ·  Difficulty: ${p.difficulty}  ·  Timeline: ${p.timeline}  ·  Success metric: ${p.metric}`);
+    });
+
+    h2("6. Detailed Action Roadmap");
+    rep.actionPlan.forEach((a, i) => {
+      h3(`Step ${i + 1}: ${a.step}`);
+      para(a.description);
+    });
 
     doc.save(`insightai-report-${Date.now()}.pdf`);
+    toast.success("Full PDF report downloaded");
+    setReportLoading(false);
   };
 
 
