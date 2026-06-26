@@ -728,8 +728,9 @@ function ExportSection({ onReport, onJSON, onCSV }: { onReport: () => void; onJS
         <Card className="p-5 glass">
           <Download className="w-6 h-6 text-primary mb-2" />
           <h4 className="font-semibold mb-1">Executive Report</h4>
-          <p className="text-sm text-muted-foreground mb-3">Polished HTML report with all insights.</p>
-          <Button onClick={onReport} className="w-full gradient-brand text-white border-0">Download Report</Button>
+          <p className="text-sm text-muted-foreground mb-3">Polished PDF report with all insights.</p>
+          <Button onClick={onReport} className="w-full gradient-brand text-white border-0">Download PDF</Button>
+
         </Card>
         <Card className="p-5 glass">
           <FileText className="w-6 h-6 text-primary mb-2" />
