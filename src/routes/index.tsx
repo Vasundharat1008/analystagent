@@ -242,37 +242,96 @@ function InsightAIApp() {
     } finally { setWhatIfLoading(false); }
   };
 
-  const downloadReport = () => {
+  const downloadReport = async () => {
     if (!summary) return;
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>InsightAI Executive Report</title>
-<style>body{font-family:-apple-system,sans-serif;max-width:860px;margin:40px auto;padding:0 24px;color:#111;line-height:1.6}
-h1{color:#6d28d9}h2{color:#1e40af;border-bottom:2px solid #e5e7eb;padding-bottom:8px;margin-top:32px}
-.metric{display:inline-block;margin:8px 16px 8px 0;padding:12px 16px;background:#f5f3ff;border-radius:8px}
-ul{padding-left:20px}.muted{color:#6b7280;font-size:13px}</style></head><body>
-<h1>InsightAI Executive Report</h1>
-<p class="muted">Generated ${new Date().toLocaleString()} · Dataset: ${summary.fileName}</p>
-<h2>Dataset Overview</h2>
-<div><span class="metric">Rows: ${summary.rows}</span><span class="metric">Columns: ${summary.columns}</span>
-<span class="metric">Missing: ${summary.missingValues}</span><span class="metric">Duplicates: ${summary.duplicateRows}</span>
-<span class="metric">Quality: ${summary.qualityPercent}%</span></div>
-<h2>Health Score: ${summary.healthScore}/100 (${summary.healthLabel})</h2>
-<p><b>Strengths:</b><ul>${summary.strengths.map((s) => `<li>${s}</li>`).join("")}</ul></p>
-<p><b>Weaknesses:</b><ul>${summary.weaknesses.map((s) => `<li>${s}</li>`).join("")}</ul></p>
-${report ? `<h2>Executive Summary</h2><p>${report.executiveSummary}</p>
-<h2>Key Findings</h2><ul>${report.keyFindings.map((s) => `<li>${s}</li>`).join("")}</ul>
-<h2>Risks</h2><ul>${report.risks.map((s) => `<li>${s}</li>`).join("")}</ul>
-<h2>Opportunities</h2><ul>${report.opportunities.map((s) => `<li>${s}</li>`).join("")}</ul>
-<h2>Recommendations</h2><ul>${report.recommendations.map((s) => `<li>${s}</li>`).join("")}</ul>
-<h2>Business Impact</h2><p>${report.businessImpact}</p>` : ""}
-${plan ? `<h2>Strategic Action Plan</h2>${plan.priorities.map((p, i) => `<div style="margin:16px 0;padding:16px;background:#faf5ff;border-radius:8px"><h3>${i + 1}. ${p.title}</h3><p>${p.reason}</p><p class="muted">Impact: ${p.impact} · Difficulty: ${p.difficulty} · Timeline: ${p.timeline} · Metric: ${p.metric}</p></div>`).join("")}` : ""}
-${whatIfResult ? `<h2>What-If Analysis</h2><pre style="white-space:pre-wrap;background:#f9fafb;padding:16px;border-radius:8px">${whatIfResult}</pre>` : ""}
-</body></html>`;
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `insightai-report-${Date.now()}.html`; a.click();
-    URL.revokeObjectURL(url);
+    const { jsPDF } = await import("jspdf");
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const marginX = 48;
+    const maxW = pageW - marginX * 2;
+    let y = 56;
+
+    const ensureSpace = (needed: number) => {
+      if (y + needed > pageH - 48) {
+        doc.addPage();
+        y = 56;
+      }
+    };
+    const writeLines = (text: string, size: number, opts: { bold?: boolean; color?: [number, number, number]; gap?: number } = {}) => {
+      doc.setFont("helvetica", opts.bold ? "bold" : "normal");
+      doc.setFontSize(size);
+      doc.setTextColor(...(opts.color ?? [17, 17, 17]));
+      const lines = doc.splitTextToSize(text, maxW) as string[];
+      const lineH = size * 1.35;
+      for (const line of lines) {
+        ensureSpace(lineH);
+        doc.text(line, marginX, y);
+        y += lineH;
+      }
+      y += opts.gap ?? 4;
+    };
+    const h1 = (t: string) => writeLines(t, 20, { bold: true, color: [109, 40, 217], gap: 6 });
+    const h2 = (t: string) => {
+      ensureSpace(40);
+      y += 8;
+      writeLines(t, 14, { bold: true, color: [30, 64, 175], gap: 2 });
+      ensureSpace(8);
+      doc.setDrawColor(229, 231, 235);
+      doc.line(marginX, y, marginX + maxW, y);
+      y += 10;
+    };
+    const para = (t: string) => writeLines(t, 11, { gap: 6 });
+    const muted = (t: string) => writeLines(t, 9, { color: [107, 114, 128], gap: 6 });
+    const bullets = (items: string[]) => {
+      for (const it of items) writeLines(`• ${it}`, 11, { gap: 2 });
+      y += 4;
+    };
+
+    h1("InsightAI Executive Report");
+    muted(`Generated ${new Date().toLocaleString()} · Dataset: ${summary.fileName}`);
+
+    h2("Dataset Overview");
+    para(`Rows: ${summary.rows}    Columns: ${summary.columns}    Missing: ${summary.missingValues}    Duplicates: ${summary.duplicateRows}    Quality: ${summary.qualityPercent}%`);
+
+    h2(`Health Score: ${summary.healthScore}/100 (${summary.healthLabel})`);
+    writeLines("Strengths", 12, { bold: true, gap: 2 });
+    bullets(summary.strengths);
+    writeLines("Weaknesses", 12, { bold: true, gap: 2 });
+    bullets(summary.weaknesses);
+
+    if (report) {
+      h2("Executive Summary");
+      para(report.executiveSummary);
+      h2("Key Findings");
+      bullets(report.keyFindings);
+      h2("Risks");
+      bullets(report.risks);
+      h2("Opportunities");
+      bullets(report.opportunities);
+      h2("Recommendations");
+      bullets(report.recommendations);
+      h2("Business Impact");
+      para(report.businessImpact);
+    }
+
+    if (plan) {
+      h2("Strategic Action Plan");
+      plan.priorities.forEach((p, i) => {
+        writeLines(`${i + 1}. ${p.title}`, 12, { bold: true, gap: 2 });
+        para(p.reason);
+        muted(`Impact: ${p.impact} · Difficulty: ${p.difficulty} · Timeline: ${p.timeline} · Metric: ${p.metric}`);
+      });
+    }
+
+    if (whatIfResult) {
+      h2("What-If Analysis");
+      para(whatIfResult);
+    }
+
+    doc.save(`insightai-report-${Date.now()}.pdf`);
   };
+
 
   const exportJSON = () => {
     if (!summary) return;
